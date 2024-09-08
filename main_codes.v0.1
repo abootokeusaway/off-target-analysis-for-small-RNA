@@ -1,0 +1,512 @@
+library(data.table)
+library(dplyr)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(data.table)
+
+custom_one_buttom_off_target_multiprocess <- function(Minimum_size, consecutive_length, match_len_more_than, gene_symbol, ncbi_database, ncbi_symbol_2_accession_file, id_2_symbol_txt, custom_blast_fa, need_17mer = TRUE) {
+  library(data.table)
+  library(parallel)
+  
+  project_dir <- paste0('/<your directory>/projects/', gene_symbol, '/')
+  blstoutputs_dir <- '/<your directory>/<blastoutput directory>/'
+  
+  df_symbol2accession <- fread(ncbi_symbol_2_accession_file, sep = '\t', data.table = FALSE)
+  query_ncbi_id <- df_symbol2accession[gene_symbol, 1]
+  
+  output_path <- paste0(project_dir, 'non_consecutive_off_target.txt')
+  consecutive_output_path <- paste0(project_dir, 'consecutive_off_target.txt')
+  
+  custom_anti_target <- custom_blast_fa[1]
+  custom_sense <- custom_blast_fa[2]
+  
+  custom_anti_target_17mer <- sub('.fasta$', '_2_18_target_4_blast.fasta', custom_anti_target)
+  custom_sense_17mer <- sub('.fasta$', '_2_18_target_4_blast.fasta', custom_sense)
+  
+  antisense_query_fasta <- paste0(project_dir, custom_anti_target)
+  sense_query_fasta <- paste0(project_dir, custom_sense)
+  antisense_query_fasta_17mer <- paste0(project_dir, custom_anti_target_17mer)
+  sense_query_fasta_17mer <- paste0(project_dir, custom_sense_17mer)
+  
+  originial_core_seq_17mer_as <- paste0(project_dir, sub('.fasta$', '_2_18.fasta', custom_sense))
+  originial_core_seq_17mer_s <- paste0(project_dir, sub('.fasta$', '_2_18.fasta', custom_anti_target))
+  
+  convert_21mer_into_17mer_by_2_18(antisense_query_fasta, antisense_query_fasta_17mer, originial_core_seq_17mer_s)
+  convert_21mer_into_17mer_by_2_18(sense_query_fasta, sense_query_fasta_17mer, originial_core_seq_17mer_as)
+  
+  blstoutputs_as <- paste0('/<your directory>/<blastoutput directory>/', sub('.fasta$', '_antisense.txt', custom_blast_fa[1]))
+  blstoutputs_s <- paste0('/<your directory>/<blastoutput directory>/', sub('.fasta$', '_sense.txt', custom_blast_fa[2]))
+  blstoutputs_as_17mer <- paste0('/<your directory>/<blastoutput directory>/', sub('.fasta$', '_antisense_17.txt', custom_anti_target_17mer))
+  blstoutputs_s_17mer <- paste0('/<your directory>/<blastoutput directory>/', sub('.fasta$', '_sense_17.txt', custom_sense_17mer))
+  
+  if (need_17mer) {
+    if (file.exists(blstoutputs_as) && file.exists(blstoutputs_s) && file.exists(blstoutputs_as_17mer) && file.exists(blstoutputs_s_17mer)) {
+      print(paste("Blast output:", blstoutputs_as, ";", blstoutputs_s, "21mer & 17mer blastoutput already existing, jumping over"))
+    } else {
+      print("Blast begin")
+      print("Blast Antisense-21mer")
+      system(paste('blastn -num_threads 24 -max_target_seqs 1000000000 -task blastn-short -strand plus -word_size 4 -evalue 10000000 -outfmt 6 -db /<your blast database path>/ -query', antisense_query_fasta, '-out', blstoutputs_as))
+      print("Blast Sense-21mer")
+      system(paste('blastn -num_threads 24 -max_target_seqs 100000000 -task blastn-short -strand plus -word_size 4 -evalue 10000000 -outfmt 6 -db /<your blast database path>/ -query', sense_query_fasta, '-out', blstoutputs_s))
+      print("Blast Antisense-17mer")
+      system(paste('blastn -num_threads 24 -max_target_seqs 100000000 -task blastn-short -strand plus -word_size 4 -evalue 10000000 -outfmt 6 -db /<your blast database path>/ -query', antisense_query_fasta_17mer, '-out', blstoutputs_as_17mer))
+      print("Blast Sense-17mer")
+      system(paste('blastn -num_threads 24 -max_target_seqs 100000000 -task blastn-short -strand plus -word_size 4 -evalue 10000000 -outfmt 6 -db /<your blast database path>/ -query', sense_query_fasta_17mer, '-out', blstoutputs_s_17mer))
+    }
+  } else {
+    if (file.exists(blstoutputs_as) && file.exists(blstoutputs_s)) {
+      print(paste("Blast output:", blstoutputs_as, ";", blstoutputs_s, "21mer blastoutput already existing, jumping over"))
+    } else {
+      print("Blast begin")
+      print("Blast Antisense-21mer")
+      system(paste('blastn -num_threads 24 -max_target_seqs 1000000000 -task blastn-short -strand plus -word_size 4 -evalue 10000000 -outfmt 6 -db /<your blast database path>/ -query', antisense_query_fasta, '-out', blstoutputs_as))
+      print("Blast Sense-21mer")
+      system(paste('blastn -num_threads 24 -max_target_seqs 100000000 -task blastn-short -strand plus -word_size 4 -evalue 10000000 -outfmt 6 -db /<your blast database path>/ -query', sense_query_fasta, '-out', blstoutputs_s))
+    }
+  }
+  
+  print(paste("project dir:", project_dir))
+  print(paste("Accession excluded:", query_ncbi_id))
+  
+  po <- makeCluster(4)
+  if (length(custom_blast_fa) == 0) {
+    print("No input siRNA assigned")
+  } else {
+    cus_fas <- list(antisense_query_fasta, sense_query_fasta)
+    cus_fas_17mer <- list(antisense_query_fasta_17mer, sense_query_fasta_17mer)
+    print("Now Analyzing blast outputs of full-length query sequence")
+    ncbi_mini <- parLapply(po, list(blstoutputs_as, blstoutputs_s, gene_symbol, ncbi_database, ncbi_symbol_2_accession_file, Minimum_size, id_2_symbol_txt, cus_fas), custom_tabular_merge_antisense_and_sense_off_target_dict_4_single_blastoutput)
+    if (need_17mer) {
+      print("Now Analyzing blast outputs of full-length query sequence")
+      ncbi_mini_17mer <- parLapply(po, list(blstoutputs_as_17mer, blstoutputs_s_17mer, gene_symbol, ncbi_database, ncbi_symbol_2_accession_file, Minimum_size, id_2_symbol_txt, cus_fas_17mer), For_17mer_custom_tabular_merge_antisense_and_sense_off_target_dict_4_single_blastoutput)
+    }
+  }
+  stopCluster(po)
+  
+  ncbi_mini_t <- ncbi_mini[[1]]
+  output_path_17mer <- sub('.txt$', '_17mer.txt', output_path)
+  consecutive_output_path_17mer <- sub('.txt$', '_17mer.txt', consecutive_output_path)
+  
+  po <- makeCluster(4)
+  full_length_table_making <- parLapply(po, list(match_len_more_than, ncbi_mini_t, output_path, consecutive_output_path, consecutive_length, antisense_query_fasta, sense_query_fasta), make_off_target_table_redundant)
+  if (need_17mer) {
+    ncbi_mini_t_17mer <- ncbi_mini_17mer[[1]]
+    core_region_table_making <- parLapply(po, list(match_len_more_than, ncbi_mini_t_17mer, output_path_17mer, consecutive_output_path_17mer, consecutive_length, antisense_query_fasta_17mer, sense_query_fasta_17mer), make_off_target_table_redundant_17mer)
+    stopCluster(po)
+    return(list(ncbi_mini_t, ncbi_mini_t_17mer, final_17mer))
+  } else {
+    stopCluster(po)
+    return(ncbi_mini_t)
+  }
+}
+
+
+convert_21mer_into_17mer_by_2_18 <- function(fasta21mer, fasta17mer, coreseq_2_18) {
+  library(Biostrings)
+  
+  # Read the input FASTA file
+  fasta_dict <- readDNAStringSet(fasta21mer)
+  
+  # Initialize vectors to store the sequences
+  fasta17mer_seqs <- character(length(fasta_dict))
+  coreseq_2_18_seqs <- character(length(fasta_dict))
+  
+  # Process each sequence
+  for (i in seq_along(fasta_dict)) {
+    seq <- as.character(fasta_dict[[i]])
+    core_seq <- substr(seq, 2, 18)
+    rev_comp_seq <- as.character(reverseComplement(DNAString(core_seq)))
+    
+    fasta17mer_seqs[i] <- paste0(">", names(fasta_dict)[i], "\n", rev_comp_seq)
+    coreseq_2_18_seqs[i] <- paste0(">", names(fasta_dict)[i], "\n", core_seq)
+  }
+  
+  # Write the 17-mer sequences to the output FASTA file
+  writeLines(fasta17mer_seqs, fasta17mer)
+  
+  # Write the core sequences to another output FASTA file
+  writeLines(coreseq_2_18_seqs, coreseq_2_18)
+  
+  # Print the generated sequences
+  cat("The target of Core seq that we put into blast is:\n", paste(fasta17mer_seqs, collapse = "\n"), "\n")
+  cat("17nt Core seq is:\n", paste(coreseq_2_18_seqs, collapse = "\n"), "\n")
+  
+  return(NULL)
+}
+
+
+custom_tabular_merge_antisense_and_sense_off_target_dict_4_single_blastoutput <- function(antisense_BBOR, sense_BBOR, gene_symbol, ncbi_ref_fna, symbol_2_accession_txt, cutoff_ident, id_2_symbol_txt, custom_fas) {
+  print(paste("Initializing blastoutput analysis for cutoff:", cutoff_ident))
+  
+  # Call custom_tabular_get_promising_off_target_for_mrna_with_ncbi_ref_mapping_table for antisense and sense
+  result_as <- custom_tabular_get_promising_off_target_for_mrna_with_ncbi_ref_mapping_table('as', antisense_BBOR, gene_symbol, ncbi_ref_fna, symbol_2_accession_txt, cutoff_ident, id_2_symbol_txt, custom_fas)
+  blast_dict1 <- result_as[[1]]
+  antisense_dict <- result_as[[2]]
+  
+  result_s <- custom_tabular_get_promising_off_target_for_mrna_with_ncbi_ref_mapping_table('s', sense_BBOR, gene_symbol, ncbi_ref_fna, symbol_2_accession_txt, cutoff_ident, id_2_symbol_txt, custom_fas)
+  blast_dict2 <- result_s[[1]]
+  sense_dict <- result_s[[2]]
+  
+  # Merge sense_dict into antisense_dict
+  for (key in names(sense_dict)) {
+    if (key %in% names(antisense_dict)) {
+      antisense_dict[[key]] <- c(antisense_dict[[key]], sense_dict[[key]])
+    } else {
+      antisense_dict[[key]] <- sense_dict[[key]]
+    }
+  }
+  
+  # Create non-redundant dictionary
+  nonredundant <- lapply(antisense_dict, unique)
+  
+  # Initialize dictionaries
+  represents <- list()
+  symbol_dict <- list()
+  antisense_sense_seqs <- list()
+  
+  # Populate dictionaries
+  for (key in names(nonredundant)) {
+    represents[[key]] <- list()
+    symbol_dict[[key]] <- list()
+    antisense_sense_seqs[[key]] <- list()
+    
+    for (v in nonredundant[[key]]) {
+      if (!(v[1] %in% symbol_dict[[key]])) {
+        if (!(v[6] %in% antisense_sense_seqs[[key]])) {
+          represents[[key]] <- append(represents[[key]], list(v))
+          symbol_dict[[key]] <- append(symbol_dict[[key]], v[1])
+          antisense_sense_seqs[[key]] <- append(antisense_sense_seqs[[key]], v[6])
+        } else if (v[6] %in% antisense_sense_seqs[[key]]) {
+          symbol_dict[[key]] <- append(symbol_dict[[key]], v[1])
+          represents[[key]] <- append(represents[[key]], list(v))
+        }
+      } else {
+        if (!(v[6] %in% antisense_sense_seqs[[key]])) {
+          represents[[key]] <- append(represents[[key]], list(v))
+          antisense_sense_seqs[[key]] <- append(antisense_sense_seqs[[key]], v[6])
+        }
+      }
+    }
+  }
+  
+  return(list(antisense_dict, symbol_dict, antisense_sense_seqs, represents))
+}
+
+
+custom_tabular_get_promising_off_target_for_mrna_with_ncbi_ref_mapping_table <- function(as_or_s, BBOR, gene_symbol, ncbi_ref_fna, symbol_2_accession_txt, cutoff_ident, id_2_symbol_txt, custom_fas) {
+  library(data.table)
+  
+  ref_dict <- fa_to_dict_head(ncbi_ref_fna)
+  as_dict <- fa_to_dict_full_head(custom_fas[1])
+  sense_dict <- fa_to_dict_full_head(custom_fas[2])
+  id2symbol_dict <- make_geneid_2_symbol_dict(id_2_symbol_txt)
+  mapping_tables <- tabular_make_ncbi_ref_mapping_table(ncbi_ref_fna)
+  mrna_dict <- mapping_tables[[1]]
+  ncrna_dict <- mapping_tables[[2]]
+  dict_accession <- mapping_tables[[3]]
+  accession_2_symbol <- mapping_tables[[4]]
+  
+  off_target_dict <- list()
+  all_mrna_keys <- names(mrna_dict)
+  df_symbol2accession <- fread(symbol_2_accession_txt, sep = '\t', data.table = FALSE)
+  blast_dict <- read_blastn_table(BBOR, df_symbol2accession[gene_symbol, 1], cutoff_ident)
+  
+  for (key in names(blast_dict)) {
+    value <- blast_dict[[key]]
+    for (target_info in value) {
+      ident <- as.integer(target_info[2])
+      if (!is.null(target_info[4]) && as.integer(target_info[6]) >= as.integer(target_info[4]) && target_info[1] %in% all_mrna_keys) {
+        if (key %in% names(off_target_dict)) {
+          if (mrna_dict[[target_info[1]]] %in% names(id2symbol_dict)) {
+            if (as.integer(target_info[7]) > as.integer(target_info[6])) {
+              target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (21 - as.integer(target_info[5])))
+              target_seq_start_21mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+              candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+              align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+              off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], id2symbol_dict[[mrna_dict[[target_info[1]]]]], ident, target_seq, candidate_seq, align, target_seq_start_21mer)))
+            }
+          } else if (startsWith(mrna_dict[[target_info[1]]], "LOC") && !(mrna_dict[[target_info[1]]] %in% names(id2symbol_dict))) {
+            target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (21 - as.integer(target_info[5])))
+            target_seq_start_21mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+            candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+            align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+            off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], as.integer(substr(mrna_dict[[target_info[1]]], 4, nchar(mrna_dict[[target_info[1]]]))), ident, target_seq, candidate_seq, align, target_seq_start_21mer)))
+          }
+        } else {
+          off_target_dict[[key]] <- list()
+          if (mrna_dict[[target_info[1]]] %in% names(id2symbol_dict)) {
+            target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (21 - as.integer(target_info[5])))
+            target_seq_start_21mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+            candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+            align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+            off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], id2symbol_dict[[mrna_dict[[target_info[1]]]]], ident, target_seq, candidate_seq, align, target_seq_start_21mer)))
+          } else if (startsWith(mrna_dict[[target_info[1]]], "LOC") && !(mrna_dict[[target_info[1]]] %in% names(id2symbol_dict))) {
+            target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (21 - as.integer(target_info[5])))
+            target_seq_start_21mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+            candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+            align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+            off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], as.integer(substr(mrna_dict[[target_info[1]]], 4, nchar(mrna_dict[[target_info[1]]]))), ident, target_seq, candidate_seq, align, target_seq_start_21mer)))
+          }
+        }
+      }
+    }
+  }
+  
+  nonredundant_dict <- lapply(off_target_dict, function(x) unique(x))
+  return(list(blast_dict, nonredundant_dict))
+}
+
+
+
+make_geneid_2_symbol_dict <- function(id_2_symbol_txt) {
+  i2s_df <- fread(id_2_symbol_txt, sep = '\t')
+  i2s_dict <- setNames(i2s_df$`NCBI gene ID`, i2s_df$`Approved symbol`)
+  return(i2s_dict)
+}
+
+tabular_make_ncbi_ref_mapping_table <- function(ncbi_ref_fna) {
+  fa_tuple <- read_ncbi_ref_fa(ncbi_ref_fna)
+  df <- data.table(fa_tuple)
+  setnames(df, c("Accession", "Symbol", "Type"))
+  df[, partial_Accession := sapply(Accession, function(x) strsplit(x, "\\.")[[1]][1])]
+  
+  dfmrna <- df[Type %in% c('mRNA', 'mRNA; nuclear gene for mitochondrial product', 'mRNA; nuclear genes for mitochondrial products')]
+  dfncrna <- df[Type %in% c('ncRNA', 'non-coding RNA', 'long non-coding RNA')]
+  
+  mrna_dict <- setNames(dfmrna$Symbol, dfmrna$partial_Accession)
+  ncrna_dict <- setNames(dfncrna$Symbol, dfncrna$partial_Accession)
+  dict_Accession <- setNames(df$Accession, df$partial_Accession)
+  fullaccession_2_symbol_dict <- setNames(df$Symbol, df$Accession)
+  
+  return(list(mrna_dict, ncrna_dict, dict_Accession, fullaccession_2_symbol_dict))
+}
+
+read_ncbi_ref_fa <- function(filename) {
+  sequences <- list()
+  ID_faa <- NULL
+  gene_symbol <- NULL
+  mrna_type <- NULL
+  
+  con <- file(filename, "r")
+  while (length(line <- readLines(con, n = 1, warn = FALSE)) > 0) {
+    if (substr(line, 1, 1) == ">") {
+      if (!is.null(ID_faa)) {
+        sequences <- append(sequences, list(c(ID_faa, gene_symbol, mrna_type)))
+      }
+      ID_faa <- strsplit(substr(line, 2, nchar(line)), " ")[[1]][1]
+      gene_symbol <- strsplit(strsplit(line, "\\(")[[1]][2], "\\)")[[1]][1]
+      mrna_type <- strsplit(line, ",")[[1]][length(strsplit(line, ",")[[1]])]
+    }
+  }
+  close(con)
+  sequences <- append(sequences, list(c(ID_faa, gene_symbol, mrna_type)))
+  
+  return(sequences)
+}
+
+read_blastn_table <- function(BBOR_table, query_ncbi_id, custom_match_len) {
+  query_gene_list <- sapply(strsplit(query_ncbi_id, ",")[[1]], function(x) strsplit(x, "\\.")[[1]][1])
+  df_bt <- fread(BBOR_table, sep = '\t', header = FALSE)
+  setnames(df_bt, c('query', 'target', 'perc_ident', 'match_len', 'mismatch_len', 'gap', 'qstart', 'qend', 'sstart', 'send', 'evalue', 'score'))
+  
+  dff_bt <- df_bt[match_len >= 4 & gap == 0]
+  dff_bt <- dff_bt[!target %in% query_gene_list]
+  
+  accession_match <- split(dff_bt[, .(target, match_len, gap, qstart, qend, sstart, send, evalue, score)], by = "query")
+  bbb <- lapply(accession_match, function(x) lapply(1:nrow(x), function(i) as.list(x[i, ])))
+  
+  return(bbb)
+}
+
+
+fa_to_dict_head <- function(filename) {
+  fasta_dict <- list()
+  ID_faa <- NULL
+  seq <- ""
+  
+  con <- file(filename, "r")
+  while (length(line <- readLines(con, n = 1, warn = FALSE)) > 0) {
+    if (substr(line, 1, 1) == ">") {
+      if (!is.null(ID_faa)) {
+        fasta_dict[[ID_faa]] <- seq
+      }
+      ID_faa <- strsplit(strsplit(substr(line, 2, nchar(line)), " ")[[1]][1], "\\.")[[1]][1]
+      seq <- ""
+    } else {
+      seq <- paste0(seq, substr(line, 1, nchar(line) - 1))
+    }
+  }
+  close(con)
+  fasta_dict[[ID_faa]] <- seq
+  
+  return(fasta_dict)
+}
+
+
+
+
+
+make_off_target_table_redundant <- function(match_len_more_than, ot_dict, total_output_path, consecutive_output_path, word_size_cutoff, as_target_fasta, s_target_fasta) {
+  df15 <- as.data.frame(do.call(rbind, lapply(ot_dict[[1]], function(x) setNames(as.list(x), NULL))))
+  df15 <- df15 %>% rownames_to_column("index")
+  dff <- df15 %>% pivot_longer(-index, names_to = "variable", values_to = "value") %>% drop_na()
+  dfff <- dff %>% arrange(index) %>% mutate(index = row_number())
+  dfff <- dfff %>% separate(value, into = c("Symbol", "Accession", "Gene_ID", "Matched_Length", "Target_Sequence", "Candidate_Sequence", "Alignment", "Target_Start"), sep = ",")
+  outputdf <- dfff %>% select(index, Symbol, Accession, Gene_ID, Matched_Length, Target_Sequence, Candidate_Sequence, Alignment, Target_Start)
+  
+  outputdf <- outputdf %>% mutate(
+    Realigned = mapply(function(ts, cs) paste0(ifelse(strsplit(ts, "")[[1]] == strsplit(cs, "")[[1]], "|", "*"), collapse = ""), Target_Sequence, Candidate_Sequence),
+    Realigned_GU = mapply(function(ts, cs) paste0(ifelse(strsplit(ts, "")[[1]] == strsplit(cs, "")[[1]], "|", ifelse((ts == "G" & cs == "A") | (ts == "T" & cs == "C"), ":", "*")), collapse = ""), Target_Sequence, Candidate_Sequence) %>% sapply(rev),
+    Re_Matched_Length = sapply(Realigned_GU, function(x) sum(strsplit(x, "")[[1]] == "|"))
+  )
+  
+  outputdf <- outputdf %>% arrange(desc(Re_Matched_Length)) %>% filter(Re_Matched_Length > match_len_more_than)
+  as_target_resp_2_sense <- fa_to_dict_full_head(as_target_fasta)[[1]]
+  
+  outputdf <- outputdf %>% mutate(
+    `3p_to_5p_targetseq` = sapply(Target_Sequence, rev),
+    `5p_to_3p_bat` = sapply(Candidate_Sequence, function(x) paste0(rev(chartr("ACGT", "TGCA", x)), collapse = "")),
+    Strand = ifelse(Candidate_Sequence == as_target_resp_2_sense, "Antisense", "Sense")
+  )
+  
+  final_df <- outputdf %>% select(Symbol, Accession, Gene_ID, Strand, `5p_to_3p_bat`, Realigned_GU, `3p_to_5p_targetseq`)
+  fwrite(final_df, total_output_path, sep = "\t")
+  
+  final_df <- outputdf %>% mutate(Good_Align = sapply(Realigned_GU, function(x) grepl(paste0(rep("|", word_size_cutoff), collapse = ""), x)))
+  fwrite(final_df, total_output_path, sep = "\t")
+  
+  final_df <- final_df %>% filter(Good_Align)
+  fwrite(final_df, consecutive_output_path, sep = "\t")
+  
+  return(outputdf)
+}
+
+make_off_target_table_redundant_17mer <- function(match_len_more_than, ot_dict, total_output_path, consecutive_output_path, word_size_cutoff, as_target_2_18_fasta, s_target_2_18_fasta) {
+  df15 <- as.data.frame(do.call(rbind, lapply(ot_dict[[1]], function(x) setNames(as.list(x), NULL))))
+  df15 <- df15 %>% rownames_to_column("index")
+  dff <- df15 %>% pivot_longer(-index, names_to = "variable", values_to = "value") %>% drop_na()
+  dfff <- dff %>% arrange(index) %>% mutate(index = row_number())
+  dfff <- dfff %>% separate(value, into = c("Symbol", "Accession", "Gene_ID", "Matched_Length", "Target_Sequence", "Candidate_Sequence", "Alignment", "Target_Start"), sep = ",")
+  outputdf <- dfff %>% select(index, Symbol, Accession, Gene_ID, Matched_Length, Target_Sequence, Candidate_Sequence, Alignment, Target_Start)
+  
+  outputdf <- outputdf %>% mutate(
+    Realigned = mapply(function(ts, cs) paste0(ifelse(strsplit(ts, "")[[1]] == strsplit(cs, "")[[1]], "|", "*"), collapse = ""), Target_Sequence, Candidate_Sequence),
+    Realigned_GU = mapply(function(ts, cs) paste0(ifelse(strsplit(ts, "")[[1]] == strsplit(cs, "")[[1]], "|", ifelse((ts == "G" & cs == "A") | (ts == "T" & cs == "C"), ":", "*")), collapse = ""), Target_Sequence, Candidate_Sequence) %>% sapply(rev),
+    Re_Matched_Length = sapply(Realigned_GU, function(x) sum(strsplit(x, "")[[1]] == "|"))
+  )
+  
+  outputdf <- outputdf %>% arrange(desc(Re_Matched_Length)) %>% filter(Re_Matched_Length > match_len_more_than)
+  as_target_resp_2_sense <- fa_to_dict_full_head(as_target_2_18_fasta)[[1]]
+  
+  outputdf <- outputdf %>% mutate(
+    `3p_to_5p_targetseq` = sapply(Target_Sequence, rev),
+    `5p_to_3p_bat` = sapply(Candidate_Sequence, function(x) paste0(rev(chartr("ACGT", "TGCA", x)), collapse = "")),
+    Strand = ifelse(Candidate_Sequence == as_target_resp_2_sense, "Sense", "Antisense")
+  )
+  
+  final_df <- outputdf %>% select(Symbol, Accession, Gene_ID, Strand, `5p_to_3p_bat`, Realigned_GU, `3p_to_5p_targetseq`)
+  fwrite(final_df, total_output_path, sep = "\t")
+  
+  final_df <- outputdf %>% mutate(Good_Align = sapply(Realigned_GU, function(x) grepl(paste0(rep("|", word_size_cutoff), collapse = ""), x)))
+  fwrite(final_df, total_output_path, sep = "\t")
+  
+  final_df <- final_df %>% filter(Good_Align)
+  fwrite(final_df, consecutive_output_path, sep = "\t")
+  
+  return(outputdf)
+}
+
+
+
+fa_to_dict_full_head <- function(filename) {
+  fasta_dict <- list()
+  ID_faa <- NULL
+  seq <- ""
+  
+  con <- file(filename, "r")
+  while (length(line <- readLines(con, n = 1, warn = FALSE)) > 0) {
+    if (substr(line, 1, 1) == ">") {
+      if (!is.null(ID_faa)) {
+        fasta_dict[[ID_faa]] <- seq
+      }
+      ID_faa <- substr(line, 2, nchar(line))
+      seq <- ""
+    } else {
+      seq <- paste0(seq, substr(line, 1, nchar(line) - 1))
+    }
+  }
+  close(con)
+  fasta_dict[[ID_faa]] <- seq
+  
+  return(fasta_dict)
+}
+
+For_17mer_custom_tabular_get_promising_off_target_for_mrna_with_ncbi_ref_mapping_table <- function(as_or_s, BBOR, gene_symbol, ncbi_ref_fna, symbol_2_accession_txt, cutoff_ident, id_2_symbol_txt, custom_fas) {
+  ref_dict <- fa_to_dict_full_head(ncbi_ref_fna)
+  as_dict <- fa_to_dict_full_head(custom_fas[1])
+  sense_dict <- fa_to_dict_full_head(custom_fas[2])
+  id2symbol_dict <- make_geneid_2_symbol_dict(id_2_symbol_txt)
+  mapping_tables <- tabular_make_ncbi_ref_mapping_table(ncbi_ref_fna)
+  mrna_dict <- mapping_tables[[1]]
+  ncrna_dict <- mapping_tables[[2]]
+  dict_accession <- mapping_tables[[3]]
+  accession_2_symbol <- mapping_tables[[4]]
+  
+  off_target_dict <- list()
+  all_mrna_keys <- names(mrna_dict)
+  df_symbol2accession <- fread(symbol_2_accession_txt, sep = '\t', data.table = FALSE)
+  blast_dict <- read_blastn_table(BBOR, df_symbol2accession[gene_symbol, 1], cutoff_ident)
+  
+  for (key in names(blast_dict)) {
+    value <- blast_dict[[key]]
+    for (target_info in value) {
+      ident <- as.integer(target_info[2])
+      if (!is.null(target_info[4]) && as.integer(target_info[6]) >= as.integer(target_info[4]) && target_info[1] %in% all_mrna_keys) {
+        if (key %in% names(off_target_dict)) {
+          if (mrna_dict[[target_info[1]]] %in% names(id2symbol_dict)) {
+            if (as.integer(target_info[7]) > as.integer(target_info[6])) {
+              target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (17 - as.integer(target_info[5])))
+              target_seq_start_17mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+              candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+              align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+              off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], id2symbol_dict[[mrna_dict[[target_info[1]]]]], ident, target_seq, candidate_seq, align, target_seq_start_17mer)))
+            }
+          } else if (startsWith(mrna_dict[[target_info[1]]], "LOC") && !(mrna_dict[[target_info[1]]] %in% names(id2symbol_dict))) {
+            target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (17 - as.integer(target_info[5])))
+            target_seq_start_17mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+            candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+            align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+            off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], as.integer(substr(mrna_dict[[target_info[1]]], 4, nchar(mrna_dict[[target_info[1]]]))), ident, target_seq, candidate_seq, align, target_seq_start_17mer)))
+          }
+        } else {
+          off_target_dict[[key]] <- list()
+          if (mrna_dict[[target_info[1]]] %in% names(id2symbol_dict)) {
+            target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (17 - as.integer(target_info[5])))
+            target_seq_start_17mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+            candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+            align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+            off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], id2symbol_dict[[mrna_dict[[target_info[1]]]]], ident, target_seq, candidate_seq, align, target_seq_start_17mer)))
+          } else if (startsWith(mrna_dict[[target_info[1]]], "LOC") && !(mrna_dict[[target_info[1]]] %in% names(id2symbol_dict))) {
+            target_seq <- substr(ref_dict[[target_info[1]]], as.integer(target_info[6]) - as.integer(target_info[4]) + 1, as.integer(target_info[7]) + (17 - as.integer(target_info[5])))
+            target_seq_start_17mer <- as.integer(target_info[6]) - as.integer(target_info[4]) + 1
+            candidate_seq <- if (as_or_s == 'as') as_dict[[key]] else sense_dict[[key]]
+            align <- paste0(sapply(seq_along(target_seq), function(i) if (substr(target_seq, i, i) == substr(candidate_seq, i, i)) "|" else "*"), collapse = "")
+            off_target_dict[[key]] <- append(off_target_dict[[key]], list(c(mrna_dict[[target_info[1]]], dict_accession[[target_info[1]]], as.integer(substr(mrna_dict[[target_info[1]]], 4, nchar(mrna_dict[[target_info[1]]]))), ident, target_seq, candidate_seq, align, target_seq_start_17mer)))
+          }
+        }
+      }
+    }
+  }
+  
+  nonredundant_dict <- lapply(off_target_dict, function(x) unique(x))
+  return(list(blast_dict, nonredundant_dict))
+}
+
+
+
+
+
+
+
+
