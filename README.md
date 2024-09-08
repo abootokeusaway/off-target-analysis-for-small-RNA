@@ -1,6 +1,6 @@
 # off-target-analysis-for-small-RNA
  
-This repository which containing codes written by Chen Weiran(email address:ben2006usa@qq.com) in R, was build and shared on github on Sep 8th ,2024
+This repository which containing codes written by Chen Weiran(email address:ben2006usa@qq.com) in R, was built and shared on github on Sep 8th ,2024
 
 People can modify file paths in main_codes.v0.1 to make an off-target analysis for small RNA of any length.
 
